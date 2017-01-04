@@ -1,0 +1,23 @@
+[package]
+name = "mio-dns"
+version = "0.1.0"
+authors = ["loggerhead <lloggerhead@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/loggerhead/mio-dns"
+homepage = "https://github.com/loggerhead/mio-dns"
+description = """
+A async DNS query lib implementation based on mio
+"""
+keywords = ["async", "DNS", "mio"]
+readme = "README.md"
+
+[dependencies]
+mio = "0.6"
+rand = "0.3"
+try_opt = "0.1"
+lru-cache = "0.1"
+byteorder = "0.5"
+clippy = { version = ">= 0.0.104", optional = true }
+
+[features]
+china_dns = []
