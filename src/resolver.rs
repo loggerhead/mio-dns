@@ -48,7 +48,7 @@ pub enum Error {
     IO(io::Error),
 }
 
-impl fmt::Debug for Error {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Error::TryAgain => write!(f, "try another QTYPE"),
@@ -62,6 +62,12 @@ impl fmt::Debug for Error {
             Error::UnknownHost(ref host) => write!(f, "unknown host {}", host),
             Error::IO(ref e) => write!(f, "{}", e),
         }
+    }
+}
+
+impl fmt::Debug for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self)
     }
 }
 

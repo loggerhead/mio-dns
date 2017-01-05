@@ -24,4 +24,4 @@ pub mod network;
 mod parser;
 pub mod resolver;
 
-pub use resolver::{Resolver, ResolveResult, Error};
+pub use resolver::{Error, Resolver, ResolveResult, HostIpaddr};

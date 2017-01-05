@@ -1,0 +1,26 @@
+language: rust
+rust:
+  - stable
+  - beta
+  - nightly
+
+os:
+  - linux
+  - osx
+
+matrix:
+  allow_failures:
+    - rust: beta
+    - rust: nightly
+
+sudo: false
+cache:
+  - cargo
+script:
+  - cargo test
+  - cargo run --example simple
+
+notifications:
+  email:
+    on_failure: change
+    on_success: change
