@@ -2,6 +2,7 @@ extern crate mio;
 extern crate mio_dns;
 
 use std::time::Duration;
+use std::io::Result;
 
 use mio::*;
 use mio_dns::{Resolver, HostIpaddr};
@@ -13,6 +14,7 @@ const TESTS: &'static [&'static str] = &["8.8.8.8",
                                          "localhost",
                                          "localhost.loggerhead.me",
                                          "www.baidu.com",
+                                         // test cache
                                          "localhost.loggerhead.me"];
 
 fn main() {
@@ -23,38 +25,50 @@ fn main() {
     resolver.register(&poll).unwrap();
     let mut events = Events::with_capacity(1024);
 
-    let mut i = 0;
     for hostname in TESTS {
-        i += 1;
-        match resolver.resolve(Token(i), hostname) {
-            Ok(None) => {
-                match poll.poll(&mut events, Some(poll_timeout)) {
-                    Ok(_) => {
-                        for event in events.iter() {
-                            match event.token() {
-                                RESOLVER_TOKEN => {
-                                    match resolver.handle_events(&poll, event.kind()) {
-                                        Ok(r) => {
-                                            println!("{:?}", r.tokens);
-                                            print_hostipaddr(&r.result);
-                                            println!();
-                                        }
-                                        Err(e) => println!("ERROR: {}", e),
-                                    }
-                                }
-                                _ => unreachable!(),
-                            }
-                        }
-                    }
-                    Err(e) => println!("ERROR: {}", e),
-                }
-            }
-            Ok(Some(host_ipaddr)) => {
-                print_hostipaddr(&host_ipaddr);
-            }
+        match query(hostname, &mut resolver, &poll, &mut events, poll_timeout) {
             Err(e) => println!("ERROR: {}", e),
+            _ => {}
         }
     }
+}
+
+fn query(hostname: &'static str,
+         resolver: &mut Resolver,
+         poll: &Poll,
+         events: &mut Events,
+         timeout: Duration) -> Result<()> {
+    #[allow(non_upper_case_globals)]
+    static mut i: usize = 0;
+    let token = unsafe {
+        i += 1;
+        Token(i)
+    };
+
+    println!("<--------- {}", hostname);
+    let r = resolver.resolve(token, hostname)?;
+    match r {
+        None => {
+            let _ = poll.poll(events, Some(timeout))?;
+            if events.is_empty() {
+                println!("ERROR: no events get of {}", hostname);
+            }
+            for event in events.iter() {
+                match event.token() {
+                    RESOLVER_TOKEN => {
+                        let r = resolver.handle_events(&poll, event.kind())?;
+                        println!("{:?}", r.tokens);
+                        print_hostipaddr(&r.result);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        Some(host_ipaddr) => {
+            print_hostipaddr(&host_ipaddr);
+        }
+    }
+    Ok(())
 }
 
 fn print_hostipaddr(host_ipaddr: &HostIpaddr) {
