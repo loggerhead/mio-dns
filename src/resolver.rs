@@ -471,36 +471,39 @@ mod test {
             match resolver.resolve(Token(i), hostname) {
                 Ok(Some(host_ipaddr)) => {
                     assert_eq!(HostIpaddr(hostname.to_string(), ip_addr), host_ipaddr);
-                    continue;
                 }
-                _ => {}
-            }
-
-            match poll.poll(&mut events, Some(timeout)) {
-                Ok(0) => {
-                    println!("poll timeout");
-                    assert!(false);
-                }
-                Ok(_) => {
-                    for event in events.iter() {
-                        match event.token() {
-                            RESOLVER_TOKEN => {
-                                match resolver.handle_events(&poll, event.kind()) {
-                                    Ok(r) => {
-                                        assert!(r.tokens.contains(&Token(i)));
-                                        assert_eq!(r.result, HostIpaddr(hostname.to_string(), ip_addr));
-                                    }
-                                    Err(e) => {
-                                        println!("handle_events error: {}", e);
-                                        assert!(false);
+                Ok(None) => {
+                    match poll.poll(&mut events, Some(timeout)) {
+                        Ok(0) => {
+                            println!("poll timeout");
+                            assert!(false);
+                        }
+                        Ok(_) => {
+                            for event in events.iter() {
+                                if RESOLVER_TOKEN == event.token() {
+                                    match resolver.handle_events(&poll, event.kind()) {
+                                        Ok(r) => {
+                                            assert!(r.tokens.contains(&Token(i)));
+                                            assert_eq!(r.result, HostIpaddr(hostname.to_string(), ip_addr));
+                                        }
+                                        Err(e) => {
+                                            println!("handle_events error: {}", e);
+                                            assert!(false);
+                                        }
                                     }
                                 }
                             }
-                            _ => unreachable!(),
+                        }
+                        Err(e) => {
+                            println!("poll error: {}", e);
+                            assert!(false);
                         }
                     }
                 }
-                _ => assert!(false),
+                Err(e) => {
+                    println!("resolve error: {}", e);
+                    assert!(false);
+                }
             }
         }
     }
