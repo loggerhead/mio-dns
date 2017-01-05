@@ -309,7 +309,7 @@ impl Resolver {
         } else {
             self.receive_data_into_buf()?;
             // TODO: debug
-            // self.reregister(poll)?;
+            self.reregister(poll)?;
 
             if self.receive_buf.as_ref().unwrap().is_empty() {
                 Err(Error::BufferEmpty)
@@ -368,7 +368,11 @@ impl Resolver {
         let events = Ready::readable();
         // let pollopts = PollOpt::edge() | PollOpt::oneshot();
         // TODO: debug
-        let pollopts = PollOpt::level();
+        let pollopts = if cfg!(windows) {
+            PollOpt::edge()
+        } else {
+            PollOpt::edge() | PollOpt::oneshot()
+        };
 
         if is_reregister {
             poll.reregister(&self.sock, self.token, events, pollopts)
@@ -452,6 +456,7 @@ mod test {
     }
 
     fn test_mio_loop(prefer_ipv6: bool) {
+        let timeout = Duration::new(TIMEOUT, 0);
         let (mut resolver, tests) = init_resolver(prefer_ipv6);
 
         let poll = Poll::new().unwrap();
@@ -469,7 +474,7 @@ mod test {
                 _ => {}
             }
 
-            match poll.poll(&mut events, Some(Duration::new(TIMEOUT, 0))) {
+            match poll.poll(&mut events, Some(timeout)) {
                 Ok(0) => {
                     println!("poll timeout");
                     assert!(false);
