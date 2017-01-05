@@ -225,6 +225,8 @@ impl Resolver {
         match self.local_resolve(hostname) {
             Ok(None) => {
                 let mut sock_addr = None;
+                // TODO: debug
+                println!("hostname: {}", hostname);
                 for addr in (hostname, 0).to_socket_addrs()? {
                     if sock_addr.is_none() {
                         sock_addr = Some(addr);
