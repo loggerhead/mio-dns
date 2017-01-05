@@ -367,7 +367,9 @@ impl Resolver {
 
 #[cfg(test)]
 mod test {
+    use std::net::IpAddr;
     use std::time::Duration;
+    use std::collections::HashMap;
     use mio::*;
     use super::*;
 
