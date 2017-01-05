@@ -368,10 +368,8 @@ pub fn parse_hosts(prefer_ipv6: bool) -> HashMap<String, IpAddr> {
     let _ = handle_every_line(&hosts_path,
                               &mut |line| {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if !parts.is_empty() {
-            let ip_addr = str2ipaddr(parts[0], prefer_ipv6);
-
-            if let Some(ip_addr) = ip_addr {
+        if parts.len() > 1 {
+            if let Some(ip_addr) = str2ipaddr(parts[0], prefer_ipv6) {
                 for hostname in parts[1..].iter() {
                     if !hostname.is_empty() {
                         hosts.insert(hostname.to_string(), ip_addr);
@@ -384,12 +382,19 @@ pub fn parse_hosts(prefer_ipv6: bool) -> HashMap<String, IpAddr> {
     hosts
 }
 
+/// call `func` of every line except lines starts with '#'
 fn handle_every_line<P: AsRef<Path>>(filepath: P, func: &mut FnMut(String)) -> Result<()> {
     let f = File::open(filepath)?;
     let reader = BufReader::new(f);
     for line in reader.lines() {
         let line = match line {
-            Ok(line) => line.trim().to_string(),
+            Ok(line) => {
+                let line = line.trim();
+                if line.starts_with("#") {
+                    continue;
+                }
+                line.to_string()
+            }
             _ => break,
         };
 

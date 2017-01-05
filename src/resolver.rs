@@ -114,6 +114,9 @@ impl Resolver {
                prefer_ipv6: bool)
                -> io::Result<Resolver> {
         let servers = Self::init_servers(server_list, prefer_ipv6)?;
+        if servers.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::Other, "no DNS servers available"));
+        }
         let (qtypes, addr) = if prefer_ipv6 {
             (vec![QType::AAAA, QType::A], "[::]:0")
         } else {

@@ -57,8 +57,8 @@ fn query(hostname: &'static str,
                 match event.token() {
                     RESOLVER_TOKEN => {
                         let r = resolver.handle_events(&poll, event.kind())?;
-                        println!("{:?}", r.tokens);
                         print_hostipaddr(&r.result);
+                        println!("    => {:?}", r.tokens);
                     }
                     _ => unreachable!(),
                 }
@@ -72,5 +72,5 @@ fn query(hostname: &'static str,
 }
 
 fn print_hostipaddr(host_ipaddr: &HostIpaddr) {
-    println!("{} => {}", host_ipaddr.0, host_ipaddr.1);
+    println!("({}, {})", host_ipaddr.0, host_ipaddr.1);
 }
