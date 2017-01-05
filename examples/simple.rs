@@ -49,8 +49,7 @@ fn query(hostname: &'static str,
     let r = resolver.resolve(token, hostname)?;
     match r {
         None => {
-            let _ = poll.poll(events, Some(timeout))?;
-            if events.is_empty() {
+            if poll.poll(events, Some(timeout))? == 0 {
                 println!("ERROR: no events get of {}", hostname);
             }
             for event in events.iter() {
