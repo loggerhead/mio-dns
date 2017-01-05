@@ -18,8 +18,13 @@ const TESTS: &'static [&'static str] = &["8.8.8.8",
                                          "localhost.loggerhead.me"];
 
 fn main() {
+    let dns_servers = Some(vec![
+        "114.114.114.114".to_string(),
+        // "114.114.114.115".to_string(),
+    ]);
+
     let poll_timeout = Duration::new(TIMEOUT, 0);
-    let mut resolver = Resolver::new(RESOLVER_TOKEN, None, PREFER_IPV6).unwrap();
+    let mut resolver = Resolver::new(RESOLVER_TOKEN, dns_servers, PREFER_IPV6).unwrap();
 
     let poll = Poll::new().unwrap();
     resolver.register(&poll).unwrap();
@@ -46,13 +51,14 @@ fn query(hostname: &'static str,
     };
 
     println!("<--------- {}", hostname);
-    let r = resolver.resolve(token, hostname)?;
-    match r {
+    match resolver.resolve(token, hostname)? {
         None => {
-            if poll.poll(events, Some(timeout))? == 0 {
-                println!("ERROR: no events get of {}", hostname);
+            // TODO: debug
+            while poll.poll(events, Some(timeout))? == 0 {
+                println!("ERROR: timeout of {}", hostname);
             }
             for event in events.iter() {
+                println!("{:?}", event);
                 match event.token() {
                     RESOLVER_TOKEN => {
                         let r = resolver.handle_events(&poll, event.kind())?;

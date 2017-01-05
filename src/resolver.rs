@@ -36,7 +36,7 @@ const CACHE_SIZE: usize = 1024;
 const BUF_SIZE: usize = 1024;
 
 pub enum Error {
-    TryAgain,
+    TrySecond,
     Timeout,
     BufferEmpty,
     EmptyHostName,
@@ -45,13 +45,14 @@ pub enum Error {
     NoPreferredResponse,
     InvalidHost(String),
     UnknownHost(String),
+    UnknownDns(SocketAddr),
     IO(io::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Error::TryAgain => write!(f, "try another QTYPE"),
+            Error::TrySecond => write!(f, "try another QTYPE"),
             Error::Timeout => write!(f, "timeout"),
             Error::BufferEmpty => write!(f, "no buffered data available"),
             Error::EmptyHostName => write!(f, "empty hostname"),
@@ -60,6 +61,7 @@ impl fmt::Display for Error {
             Error::NoPreferredResponse => write!(f, "no preferred response"),
             Error::InvalidHost(ref host) => write!(f, "invalid host {}", host),
             Error::UnknownHost(ref host) => write!(f, "unknown host {}", host),
+            Error::UnknownDns(ref server) => write!(f, "unknown dns server {}", server),
             Error::IO(ref e) => write!(f, "{}", e),
         }
     }
@@ -165,7 +167,9 @@ impl Resolver {
     fn send_request(&self, hostname: &str, qtype: u16) -> io::Result<()> {
         for server in &self.servers {
             let req = build_request(hostname, qtype).ok_or(Error::BuildRequestFailed)?;
-            self.sock.send_to(&req, &server)?;
+            let a = self.sock.send_to(&req, &server)?;
+            // TODO: debug
+            println!("({}, {}) send {:?} of {} to {}", hostname, qtype, a, req.len(), server);
         }
         Ok(())
     }
@@ -183,9 +187,14 @@ impl Resolver {
 
         match self.sock.recv_from(buf_slice) {
             Ok(None) => {}
-            Ok(Some((nread, _addr))) => unsafe {
-                buf.set_len(nread);
-            },
+            Ok(Some((nread, addr))) => {
+                unsafe {
+                    buf.set_len(nread);
+                }
+                if !self.servers.contains(&addr) {
+                    res = Err(From::from(Error::UnknownDns(addr)));
+                }
+            }
             Err(e) => res = Err(From::from(e)),
         }
         self.receive_buf = Some(buf);
@@ -299,19 +308,21 @@ impl Resolver {
             Err(Error::IO(e))
         } else {
             self.receive_data_into_buf()?;
-            self.reregister(poll)?;
-            let host_ipaddr = self.handle_recevied()?;
-            let tokens = self.remove_hostname(&host_ipaddr.0);
-            Ok(ResolveResult::new(tokens, host_ipaddr))
+            // TODO: debug
+            // self.reregister(poll)?;
+
+            if self.receive_buf.as_ref().unwrap().is_empty() {
+                Err(Error::BufferEmpty)
+            } else {
+                let host_ipaddr = self.handle_recevied()?;
+                let tokens = self.remove_hostname(&host_ipaddr.0);
+                Ok(ResolveResult::new(tokens, host_ipaddr))
+            }
         }
     }
 
     fn handle_recevied(&mut self) -> Result<HostIpaddr, Error> {
         let receive_buf = self.receive_buf.take().unwrap();
-        if receive_buf.is_empty() {
-            self.receive_buf = Some(receive_buf);
-            return Err(Error::BufferEmpty);
-        }
 
         let res = if let Some(response) = parse_response(&receive_buf) {
             let hostname = response.hostname;
@@ -332,7 +343,7 @@ impl Resolver {
                     Some(HostnameStatus::First) => {
                         self.send_request(&hostname, self.qtypes[1])?;
                         self.hostname_status.insert(hostname, HostnameStatus::Second);
-                        Err(Error::TryAgain)
+                        Err(Error::TrySecond)
                     }
                     Some(HostnameStatus::Second) => {
                         for question in response.questions {
@@ -355,13 +366,16 @@ impl Resolver {
 
     fn do_register(&mut self, poll: &Poll, is_reregister: bool) -> io::Result<()> {
         let events = Ready::readable();
-        let pollopts = PollOpt::edge() | PollOpt::oneshot();
+        // let pollopts = PollOpt::edge() | PollOpt::oneshot();
+        // TODO: debug
+        let pollopts = PollOpt::level();
 
         if is_reregister {
             poll.reregister(&self.sock, self.token, events, pollopts)
                 .map_err(From::from)
         } else {
-            poll.register(&self.sock, self.token, events, pollopts).map_err(From::from)
+            poll.register(&self.sock, self.token, events, pollopts)
+                .map_err(From::from)
         }
     }
 
@@ -456,16 +470,24 @@ mod test {
             }
 
             match poll.poll(&mut events, Some(Duration::new(TIMEOUT, 0))) {
+                Ok(0) => {
+                    println!("poll timeout");
+                    assert!(false);
+                }
                 Ok(_) => {
                     for event in events.iter() {
                         match event.token() {
                             RESOLVER_TOKEN => {
-                                let r = resolver.handle_events(&poll, event.kind());
-                                assert!(r.is_ok());
-                                let r = r.unwrap();
-
-                                assert!(r.tokens.contains(&Token(i)));
-                                assert_eq!(r.result, HostIpaddr(hostname.to_string(), ip_addr));
+                                match resolver.handle_events(&poll, event.kind()) {
+                                    Ok(r) => {
+                                        assert!(r.tokens.contains(&Token(i)));
+                                        assert_eq!(r.result, HostIpaddr(hostname.to_string(), ip_addr));
+                                    }
+                                    Err(e) => {
+                                        println!("handle_events error: {}", e);
+                                        assert!(false);
+                                    }
+                                }
                             }
                             _ => unreachable!(),
                         }
