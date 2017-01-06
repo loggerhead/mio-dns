@@ -169,7 +169,7 @@ impl Resolver {
             let req = build_request(hostname, qtype).ok_or(Error::BuildRequestFailed)?;
             let a = self.sock.send_to(&req, &server)?;
             // TODO: debug
-            println!("({}, {}) send {:?} of {} to {}", hostname, qtype, a, req.len(), server);
+            println!("send {:?}/{} to {}", a, req.len(), server);
         }
         Ok(())
     }
@@ -225,8 +225,6 @@ impl Resolver {
         match self.local_resolve(hostname) {
             Ok(None) => {
                 let mut sock_addr = None;
-                // TODO: debug
-                println!("hostname: {}", hostname);
                 for addr in (hostname, 0).to_socket_addrs()? {
                     if sock_addr.is_none() {
                         sock_addr = Some(addr);
@@ -468,12 +466,16 @@ mod test {
         let mut i = 0;
         for (hostname, &ip_addr) in &tests {
             i += 1;
+
             match resolver.resolve(Token(i), hostname) {
+                // resolved from cache or hosts
                 Ok(Some(host_ipaddr)) => {
                     assert_eq!(HostIpaddr(hostname.to_string(), ip_addr), host_ipaddr);
                 }
+                // wait for DNS response
                 Ok(None) => {
                     match poll.poll(&mut events, Some(timeout)) {
+                        // TODO: figure out what happened
                         Ok(0) => {
                             println!("poll timeout");
                             assert!(false);
