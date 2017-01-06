@@ -309,7 +309,9 @@ impl Resolver {
         } else {
             self.receive_data_into_buf()?;
             // TODO: debug
-            self.reregister(poll)?;
+            if !cfg!(windows) {
+                self.reregister(poll)?;
+            }
 
             if self.receive_buf.as_ref().unwrap().is_empty() {
                 Err(Error::BufferEmpty)
@@ -406,14 +408,15 @@ mod test {
                                                            ("localhost", "127.0.0.1"),
                                                            ("localhost.loggerhead.me",
                                                             "127.0.0.1")];
-
     const IPV6_TESTS: [(&'static str, &'static str); 3] = [("2001:4860:4860::8888",
                                                             "2001:4860:4860::8888"),
                                                            ("localhost", "::1"),
                                                            ("localhost.loggerhead.me", "::1")];
 
     fn init_resolver(prefer_ipv6: bool) -> (Resolver, HashMap<&'static str, IpAddr>) {
-        let resolver = Resolver::new(RESOLVER_TOKEN, None, prefer_ipv6).unwrap();
+        let dns_servers = vec!["8.8.8.8".to_string(),
+                               "8.8.4.4".to_string()];
+        let resolver = Resolver::new(RESOLVER_TOKEN, Some(dns_servers), prefer_ipv6).unwrap();
         let tmp = if prefer_ipv6 { IPV6_TESTS } else { IPV4_TESTS };
         let mut tests = HashMap::new();
         for &(hostname, ip) in &tmp {
