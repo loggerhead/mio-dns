@@ -20,11 +20,10 @@ const TESTS: &'static [&'static str] = &["8.8.8.8",
 
 fn main() {
     let mut resolver = Resolver::new(RESOLVER_TOKEN, None, PREFER_IPV6).unwrap();
-
     let poll = Poll::new().unwrap();
-    resolver.register(&poll).unwrap();
     let mut events = Events::with_capacity(1024);
     let mut hostnames: HashSet<&str> = HashSet::new();
+    resolver.register(&poll).unwrap();
 
     let mut i = RESOLVER_TOKEN.0 + 1;
     for hostname in TESTS {
@@ -37,6 +36,8 @@ fn main() {
             hostnames.insert(hostname);
         }
     }
+
+    println!("wait to resolve:\n{:?}", hostnames);
 
     while !hostnames.is_empty() {
         match poll.poll(&mut events, None) {

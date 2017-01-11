@@ -124,7 +124,7 @@ impl Resolver {
         match self.sock.recv_from(&mut self.received) {
             Ok(None) => Ok(0),
             Ok(Some((nread, addr))) => {
-                if self.dns_servers.contains(&addr) {
+                if self.dns_servers.contains(&addr) || cfg!(feature = "allow_unknow_server") {
                     Ok(nread)
                 } else {
                     Err(From::from(Error::UnknownDns(addr)))
@@ -381,6 +381,7 @@ impl From<io::Error> for Error {
 #[cfg(test)]
 mod test {
     use std::io;
+    use std::collections::HashSet;
     use mio::*;
     use super::*;
 
@@ -421,23 +422,26 @@ mod test {
 
     fn test_mio_loop(prefer_ipv6: bool) -> io::Result<()> {
         let mut resolver = Resolver::new(RESOLVER_TOKEN, None, prefer_ipv6).unwrap();
-
         let poll = Poll::new().unwrap();
-        resolver.register(&poll).unwrap();
         let mut events = Events::with_capacity(1024);
+        let mut hostnames: HashSet<&str> = HashSet::new();
+        resolver.register(&poll).unwrap();
 
-        let mut cnt = RESOLVER_TOKEN.0 + 1;
+        let mut i = RESOLVER_TOKEN.0 + 1;
         for hostname in TESTS {
-            let token = Token(cnt);
+            let token = Token(i);
+            i += 1;
+
             if let Ok(Some(host_ipaddr)) = resolver.resolve(token, hostname) {
                 println!("{{{:?}}} => {}", token, host_ipaddr);
             } else {
-                cnt += 1;
+                hostnames.insert(hostname);
             }
         }
-        println!("cnt = {}", cnt);
 
-        while cnt > RESOLVER_TOKEN.0 + 1 {
+        println!("wait to resolve:\n{:?}", hostnames);
+
+        while !hostnames.is_empty() {
             if let 0 = poll.poll(&mut events, None)? {
                 continue;
             }
@@ -445,15 +449,22 @@ mod test {
             for event in events.iter() {
                 match event.token() {
                     RESOLVER_TOKEN => {
-                        let r = resolver.handle_events(&poll, event.kind());
-                        assert!(r.is_ok());
-                        println!("{}", r.unwrap());
+                        match resolver.handle_events(&poll, event.kind()) {
+                            Ok(r) => {
+                                hostnames.remove(&r.result.0 as &str);
+                                println!("{}", r);
+                            }
+                            Err(e) => {
+                                println!("resolve error: {}", e);
+                                assert!(false);
+                            }
+                        }
                     }
                     _ => unreachable!(),
                 }
             }
 
-            cnt -= 1;
+            i -= 1;
         }
 
         Ok(())

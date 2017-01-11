@@ -17,8 +17,8 @@ sudo: false
 cache:
   - cargo
 script:
-  - cargo test -- --nocapture
-  - cargo run --example simple
+  - cargo test --features allow_unknow_server
+  - cargo run --features allow_unknow_server --example simple
 
 notifications:
   email:
