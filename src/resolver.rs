@@ -2,7 +2,6 @@ use std::io;
 use std::fmt;
 use std::str::FromStr;
 use std::convert::From;
-use std::slice::from_raw_parts_mut;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, ToSocketAddrs, SocketAddr};
 
@@ -36,7 +35,7 @@ const CACHE_SIZE: usize = 1024;
 const BUF_SIZE: usize = 1024;
 
 pub enum Error {
-    TryAgain,
+    TrySecond,
     Timeout,
     BufferEmpty,
     EmptyHostName,
@@ -45,13 +44,14 @@ pub enum Error {
     NoPreferredResponse,
     InvalidHost(String),
     UnknownHost(String),
+    UnknownDns(SocketAddr),
     IO(io::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Error::TryAgain => write!(f, "try another QTYPE"),
+            Error::TrySecond => write!(f, "try another QTYPE"),
             Error::Timeout => write!(f, "timeout"),
             Error::BufferEmpty => write!(f, "no buffered data available"),
             Error::EmptyHostName => write!(f, "empty hostname"),
@@ -60,6 +60,7 @@ impl fmt::Display for Error {
             Error::NoPreferredResponse => write!(f, "no preferred response"),
             Error::InvalidHost(ref host) => write!(f, "invalid host {}", host),
             Error::UnknownHost(ref host) => write!(f, "unknown host {}", host),
+            Error::UnknownDns(ref server) => write!(f, "unknown dns server {}", server),
             Error::IO(ref e) => write!(f, "{}", e),
         }
     }
@@ -105,7 +106,7 @@ pub struct Resolver {
     // DNS servers
     servers: Vec<SocketAddr>,
     qtypes: Vec<u16>,
-    receive_buf: Option<Vec<u8>>,
+    received: [u8; BUF_SIZE],
 }
 
 impl Resolver {
@@ -137,7 +138,7 @@ impl Resolver {
             hostname_to_tokens: HashMap::new(),
             sock: sock,
             qtypes: qtypes,
-            receive_buf: Some(Vec::with_capacity(BUF_SIZE)),
+            received: [0u8; BUF_SIZE],
         })
     }
 
@@ -162,6 +163,31 @@ impl Resolver {
         self.token
     }
 
+    pub fn remove_token(&mut self, token: Token) -> Option<String> {
+        let res = self.token_to_hostname.remove(&token);
+        if let Some(ref hostname) = res {
+            self.hostname_to_tokens.get_mut(hostname).map(|tokens| tokens.remove(&token));
+            if self.hostname_to_tokens.get(hostname).unwrap().is_empty() {
+                self.hostname_to_tokens.remove(hostname);
+                self.hostname_status.remove(hostname);
+            }
+        }
+        res
+    }
+
+    fn remove_hostname(&mut self, hostname: &str) -> HashSet<Token> {
+        let mut tokens = HashSet::new();
+
+        if let Some(related) = self.hostname_to_tokens.remove(hostname) {
+            for token in related {
+                self.token_to_hostname.remove(&token);
+                tokens.insert(token);
+            }
+        }
+
+        tokens
+    }
+
     fn send_request(&self, hostname: &str, qtype: u16) -> io::Result<()> {
         for server in &self.servers {
             let req = build_request(hostname, qtype).ok_or(Error::BuildRequestFailed)?;
@@ -170,26 +196,18 @@ impl Resolver {
         Ok(())
     }
 
-    fn receive_data_into_buf(&mut self) -> io::Result<()> {
-        let mut res = Ok(());
-        let mut buf = self.receive_buf.take().unwrap();
-        // get writable slice from vec
-        let ptr = buf.as_mut_ptr();
-        let cap = buf.capacity();
-        let buf_slice = unsafe { &mut from_raw_parts_mut(ptr, cap) };
-        unsafe {
-            buf.set_len(0);
+    fn recv_into_buf(&mut self) -> io::Result<usize> {
+        match self.sock.recv_from(&mut self.received) {
+            Ok(None) => Ok(0),
+            Ok(Some((nread, addr))) => {
+                if self.servers.contains(&addr) {
+                    Ok(nread)
+                } else {
+                    Err(From::from(Error::UnknownDns(addr)))
+                }
+            }
+            Err(e) => Err(e),
         }
-
-        match self.sock.recv_from(buf_slice) {
-            Ok(None) => {}
-            Ok(Some((nread, _addr))) => unsafe {
-                buf.set_len(nread);
-            },
-            Err(e) => res = Err(From::from(e)),
-        }
-        self.receive_buf = Some(buf);
-        res
     }
 
     fn local_resolve(&mut self, hostname: &str) -> io::Result<Option<HostIpaddr>> {
@@ -258,31 +276,6 @@ impl Resolver {
         }
     }
 
-    pub fn remove_token(&mut self, token: Token) -> Option<String> {
-        let res = self.token_to_hostname.remove(&token);
-        if let Some(ref hostname) = res {
-            self.hostname_to_tokens.get_mut(hostname).map(|tokens| tokens.remove(&token));
-            if self.hostname_to_tokens.get(hostname).unwrap().is_empty() {
-                self.hostname_to_tokens.remove(hostname);
-                self.hostname_status.remove(hostname);
-            }
-        }
-        res
-    }
-
-    fn remove_hostname(&mut self, hostname: &str) -> HashSet<Token> {
-        let mut tokens = HashSet::new();
-
-        if let Some(related) = self.hostname_to_tokens.remove(hostname) {
-            for token in related {
-                self.token_to_hostname.remove(&token);
-                tokens.insert(token);
-            }
-        }
-
-        tokens
-    }
-
     pub fn handle_events(&mut self, poll: &Poll, events: Ready) -> Result<ResolveResult, Error> {
         if events.is_error() {
             let e = self.sock
@@ -298,22 +291,23 @@ impl Resolver {
 
             Err(Error::IO(e))
         } else {
-            self.receive_data_into_buf()?;
+            let res = match self.recv_into_buf() {
+                Ok(0) => Err(Error::BufferEmpty),
+                Ok(n) => {
+                    let host_ipaddr = self.handle_recevied(n)?;
+                    let tokens = self.remove_hostname(&host_ipaddr.0);
+                    Ok(ResolveResult::new(tokens, host_ipaddr))
+                }
+                Err(e) => Err(From::from(e)),
+            };
             self.reregister(poll)?;
-            let host_ipaddr = self.handle_recevied()?;
-            let tokens = self.remove_hostname(&host_ipaddr.0);
-            Ok(ResolveResult::new(tokens, host_ipaddr))
+            res
         }
     }
 
-    fn handle_recevied(&mut self) -> Result<HostIpaddr, Error> {
-        let receive_buf = self.receive_buf.take().unwrap();
-        if receive_buf.is_empty() {
-            self.receive_buf = Some(receive_buf);
-            return Err(Error::BufferEmpty);
-        }
-
-        let res = if let Some(response) = parse_response(&receive_buf) {
+    fn handle_recevied(&mut self, nread: usize) -> Result<HostIpaddr, Error> {
+        let data = &self.received[..nread];
+        if let Some(response) = parse_response(data) {
             let hostname = response.hostname;
             let status = self.hostname_status.remove(&hostname);
             let mut ip = None;
@@ -332,7 +326,7 @@ impl Resolver {
                     Some(HostnameStatus::First) => {
                         self.send_request(&hostname, self.qtypes[1])?;
                         self.hostname_status.insert(hostname, HostnameStatus::Second);
-                        Err(Error::TryAgain)
+                        Err(Error::TrySecond)
                     }
                     Some(HostnameStatus::Second) => {
                         for question in response.questions {
@@ -347,10 +341,7 @@ impl Resolver {
             }
         } else {
             Err(Error::InvalidResponse)
-        };
-
-        self.receive_buf = Some(receive_buf);
-        res
+        }
     }
 
     fn do_register(&mut self, poll: &Poll, is_reregister: bool) -> io::Result<()> {
@@ -359,10 +350,9 @@ impl Resolver {
 
         if is_reregister {
             poll.reregister(&self.sock, self.token, events, pollopts)
-                .map_err(From::from)
         } else {
-            poll.register(&self.sock, self.token, events, pollopts).map_err(From::from)
-        }
+            poll.register(&self.sock, self.token, events, pollopts)
+        }.map_err(From::from)
     }
 
     pub fn register(&mut self, poll: &Poll) -> io::Result<()> {
@@ -376,13 +366,12 @@ impl Resolver {
 
 #[cfg(test)]
 mod test {
+    use std::io;
     use std::net::IpAddr;
-    use std::time::Duration;
     use std::collections::HashMap;
     use mio::*;
     use super::*;
 
-    const TIMEOUT: u64 = 5;
     const RESOLVER_TOKEN: Token = Token(0);
     const IPV4_TESTS: [(&'static str, &'static str); 3] = [("8.8.8.8", "8.8.8.8"),
                                                            ("localhost", "127.0.0.1"),
@@ -429,61 +418,58 @@ mod test {
         test_block_resolve(false);
     }
 
-    // TODO: test ipv6 related tests
-    // this test may failed if your computer is not a prefer_ipv6 host
     #[test]
-    #[ignore]
     fn ipv6_block_resolve() {
         test_block_resolve(true);
     }
 
-    fn test_mio_loop(prefer_ipv6: bool) {
+    fn test_mio_loop(prefer_ipv6: bool) -> io::Result<()> {
         let (mut resolver, tests) = init_resolver(prefer_ipv6);
 
         let poll = Poll::new().unwrap();
         resolver.register(&poll).unwrap();
         let mut events = Events::with_capacity(1024);
 
-        let mut i = 0;
+        let mut cnt = RESOLVER_TOKEN.0 + 1;
         for (hostname, &ip_addr) in &tests {
-            i += 1;
-            match resolver.resolve(Token(i), hostname) {
-                Ok(Some(host_ipaddr)) => {
-                    assert_eq!(HostIpaddr(hostname.to_string(), ip_addr), host_ipaddr);
-                    continue;
-                }
-                _ => {}
-            }
-
-            match poll.poll(&mut events, Some(Duration::new(TIMEOUT, 0))) {
-                Ok(_) => {
-                    for event in events.iter() {
-                        match event.token() {
-                            RESOLVER_TOKEN => {
-                                let r = resolver.handle_events(&poll, event.kind());
-                                assert!(r.is_ok());
-                                let r = r.unwrap();
-
-                                assert!(r.tokens.contains(&Token(i)));
-                                assert_eq!(r.result, HostIpaddr(hostname.to_string(), ip_addr));
-                            }
-                            _ => unreachable!(),
-                        }
-                    }
-                }
-                _ => assert!(false),
+            if let Ok(Some(host_ipaddr)) = resolver.resolve(Token(cnt), hostname) {
+                assert_eq!(HostIpaddr(hostname.to_string(), ip_addr), host_ipaddr);
+            } else {
+                cnt += 1;
             }
         }
+
+        while cnt > RESOLVER_TOKEN.0 + 1 {
+            if let 0 = poll.poll(&mut events, None)? {
+                continue;
+            }
+
+            for event in events.iter() {
+                match event.token() {
+                    RESOLVER_TOKEN => {
+                        let r = resolver.handle_events(&poll, event.kind());
+                        assert!(r.is_ok());
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+            cnt -= 1;
+        }
+
+        Ok(())
     }
 
     #[test]
     fn mio_loop_ipv4() {
-        test_mio_loop(false);
+        assert!(test_mio_loop(false).is_ok());
     }
 
+    // TODO: test ipv6 related tests
+    // this test may failed if your computer is not a prefer_ipv6 host
     #[test]
     #[ignore]
     fn mio_loop_ipv6() {
-        test_mio_loop(true);
+        assert!(test_mio_loop(true).is_ok());
     }
 }
