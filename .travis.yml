@@ -17,7 +17,7 @@ sudo: false
 cache:
   - cargo
 script:
-  - cargo test
+  - cargo test -- --nocapture
   - cargo run --example simple
 
 notifications:

@@ -13,83 +13,8 @@ use network::*;
 use parser::*;
 use super::{QType, QClass};
 
-#[derive(PartialEq, Eq, Hash, Clone, Debug)]
-pub struct HostIpaddr(pub String, pub IpAddr);
-
-#[derive(PartialEq, Eq, Clone, Debug)]
-pub struct ResolveResult {
-    pub tokens: HashSet<Token>,
-    pub result: HostIpaddr,
-}
-
-impl ResolveResult {
-    fn new(tokens: HashSet<Token>, result: HostIpaddr) -> ResolveResult {
-        ResolveResult {
-            tokens: tokens,
-            result: result,
-        }
-    }
-}
-
 const CACHE_SIZE: usize = 1024;
 const BUF_SIZE: usize = 1024;
-
-pub enum Error {
-    TrySecond,
-    Timeout,
-    BufferEmpty,
-    EmptyHostName,
-    InvalidResponse,
-    BuildRequestFailed,
-    NoPreferredResponse,
-    InvalidHost(String),
-    UnknownHost(String),
-    UnknownDns(SocketAddr),
-    IO(io::Error),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            Error::TrySecond => write!(f, "try another QTYPE"),
-            Error::Timeout => write!(f, "timeout"),
-            Error::BufferEmpty => write!(f, "no buffered data available"),
-            Error::EmptyHostName => write!(f, "empty hostname"),
-            Error::InvalidResponse => write!(f, "invalid response"),
-            Error::BuildRequestFailed => write!(f, "build dns request failed"),
-            Error::NoPreferredResponse => write!(f, "no preferred response"),
-            Error::InvalidHost(ref host) => write!(f, "invalid host {}", host),
-            Error::UnknownHost(ref host) => write!(f, "unknown host {}", host),
-            Error::UnknownDns(ref server) => write!(f, "unknown dns server {}", server),
-            Error::IO(ref e) => write!(f, "{}", e),
-        }
-    }
-}
-
-impl fmt::Debug for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self)
-    }
-}
-
-impl From<Error> for io::Error {
-    fn from(e: Error) -> io::Error {
-        let errmsg = format!("dns resolve error: {:?}", e);
-        io::Error::new(io::ErrorKind::Other, errmsg)
-    }
-}
-
-impl From<io::Error> for Error {
-    fn from(e: io::Error) -> Error {
-        Error::IO(e)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum HostnameStatus {
-    First,
-    Second,
-}
 
 // TODO: add last_activities to record last active time of hostname
 pub struct Resolver {
@@ -103,8 +28,7 @@ pub struct Resolver {
     // multiple tokens query the same hostname
     hostname_to_tokens: HashMap<String, HashSet<Token>>,
     sock: UdpSocket,
-    // DNS servers
-    servers: Vec<SocketAddr>,
+    dns_servers: Vec<SocketAddr>,
     qtypes: Vec<u16>,
     received: [u8; BUF_SIZE],
 }
@@ -114,9 +38,9 @@ impl Resolver {
                server_list: Option<Vec<String>>,
                prefer_ipv6: bool)
                -> io::Result<Resolver> {
-        let servers = Self::init_servers(server_list, prefer_ipv6)?;
-        if servers.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::Other, "no DNS servers available"));
+        let dns_servers = Self::init_dns_servers(server_list, prefer_ipv6)?;
+        if dns_servers.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::Other, "no dns servers available"));
         }
         let (qtypes, addr) = if prefer_ipv6 {
             (vec![QType::AAAA, QType::A], "[::]:0")
@@ -130,7 +54,7 @@ impl Resolver {
         Ok(Resolver {
             token: token,
             prefer_ipv6: prefer_ipv6,
-            servers: servers,
+            dns_servers: dns_servers,
             hosts: hosts,
             cache: LruCache::new(CACHE_SIZE),
             hostname_status: HashMap::new(),
@@ -142,21 +66,21 @@ impl Resolver {
         })
     }
 
-    fn init_servers(server_list: Option<Vec<String>>,
+    fn init_dns_servers(server_list: Option<Vec<String>>,
                     prefer_ipv6: bool)
                     -> io::Result<Vec<SocketAddr>> {
         // pre-define DNS server list
         let server_list = match server_list {
-            Some(servers) => servers,
+            Some(dns_servers) => dns_servers,
             None => parse_resolv(prefer_ipv6),
         };
-        let mut servers = vec![];
+        let mut dns_servers = vec![];
         for server in server_list {
             let ip_addr = pair2addr(&server, 53)?;
-            servers.push(ip_addr);
+            dns_servers.push(ip_addr);
         }
 
-        Ok(servers)
+        Ok(dns_servers)
     }
 
     pub fn get_token(&self) -> Token {
@@ -189,7 +113,7 @@ impl Resolver {
     }
 
     fn send_request(&self, hostname: &str, qtype: u16) -> io::Result<()> {
-        for server in &self.servers {
+        for server in &self.dns_servers {
             let req = build_request(hostname, qtype).ok_or(Error::BuildRequestFailed)?;
             self.sock.send_to(&req, &server)?;
         }
@@ -200,7 +124,7 @@ impl Resolver {
         match self.sock.recv_from(&mut self.received) {
             Ok(None) => Ok(0),
             Ok(Some((nread, addr))) => {
-                if self.servers.contains(&addr) {
+                if self.dns_servers.contains(&addr) {
                     Ok(nread)
                 } else {
                     Err(From::from(Error::UnknownDns(addr)))
@@ -252,8 +176,7 @@ impl Resolver {
                     }
                 }
 
-                let host_ipaddr = sock_addr.map(|addr| HostIpaddr(hostname.to_string(), addr.ip()));
-                Ok(host_ipaddr)
+                Ok(sock_addr.map(|addr| HostIpaddr(hostname.to_string(), addr.ip())))
             }
             res => res,
         }
@@ -276,6 +199,9 @@ impl Resolver {
         }
     }
 
+    // if no tokens in `ResolveResult`, it means there exists
+    // multiple query of the same hostname, and the related tokens
+    // are removed in the first response
     pub fn handle_events(&mut self, poll: &Poll, events: Ready) -> Result<ResolveResult, Error> {
         if events.is_error() {
             let e = self.sock
@@ -364,47 +290,118 @@ impl Resolver {
     }
 }
 
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+pub struct HostIpaddr(pub String, pub IpAddr);
+
+impl fmt::Display for HostIpaddr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "({}, {})", self.0, self.1)
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct ResolveResult {
+    pub tokens: HashSet<Token>,
+    pub result: HostIpaddr,
+}
+
+impl fmt::Display for ResolveResult {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?} => {}", self.tokens, self.result)
+    }
+}
+
+impl ResolveResult {
+    fn new(tokens: HashSet<Token>, result: HostIpaddr) -> ResolveResult {
+        ResolveResult {
+            tokens: tokens,
+            result: result,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HostnameStatus {
+    First,
+    Second,
+}
+
+pub enum Error {
+    TrySecond,
+    Timeout,
+    BufferEmpty,
+    EmptyHostName,
+    InvalidResponse,
+    BuildRequestFailed,
+    NoPreferredResponse,
+    InvalidHost(String),
+    UnknownHost(String),
+    UnknownDns(SocketAddr),
+    IO(io::Error),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Error::TrySecond => write!(f, "try another QTYPE"),
+            Error::Timeout => write!(f, "timeout"),
+            Error::BufferEmpty => write!(f, "no buffered data available"),
+            Error::EmptyHostName => write!(f, "empty hostname"),
+            Error::InvalidResponse => write!(f, "invalid response"),
+            Error::BuildRequestFailed => write!(f, "build dns request failed"),
+            Error::NoPreferredResponse => write!(f, "no preferred response"),
+            Error::InvalidHost(ref host) => write!(f, "invalid host {}", host),
+            Error::UnknownHost(ref host) => write!(f, "unknown host {}", host),
+            Error::UnknownDns(ref server) => write!(f, "unknown dns server {}", server),
+            Error::IO(ref e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl fmt::Debug for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
+impl From<Error> for io::Error {
+    fn from(e: Error) -> io::Error {
+        let errmsg = format!("dns resolve error: {:?}", e);
+        io::Error::new(io::ErrorKind::Other, errmsg)
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(e: io::Error) -> Error {
+        Error::IO(e)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::io;
-    use std::net::IpAddr;
-    use std::collections::HashMap;
     use mio::*;
     use super::*;
 
     const RESOLVER_TOKEN: Token = Token(0);
-    const IPV4_TESTS: [(&'static str, &'static str); 3] = [("8.8.8.8", "8.8.8.8"),
-                                                           ("localhost", "127.0.0.1"),
-                                                           ("localhost.loggerhead.me",
-                                                            "127.0.0.1")];
+    const TESTS: &'static [&'static str] = &[
+        "8.8.8.8",
+        "localhost",
+        "localhost.loggerhead.me",
+        "2001:4860:4860::8888",
+        "localhost.loggerhead.me",
+    ];
 
-    const IPV6_TESTS: [(&'static str, &'static str); 3] = [("2001:4860:4860::8888",
-                                                            "2001:4860:4860::8888"),
-                                                           ("localhost", "::1"),
-                                                           ("localhost.loggerhead.me", "::1")];
-
-    fn init_resolver(prefer_ipv6: bool) -> (Resolver, HashMap<&'static str, IpAddr>) {
-        let resolver = Resolver::new(RESOLVER_TOKEN, None, prefer_ipv6).unwrap();
-        let tmp = if prefer_ipv6 { IPV6_TESTS } else { IPV4_TESTS };
-        let mut tests = HashMap::new();
-        for &(hostname, ip) in &tmp {
-            let ip = super::super::network::str2ipaddr(ip, prefer_ipv6);
-            assert!(ip.is_some());
-            tests.insert(hostname, ip.unwrap());
-        }
-
-        (resolver, tests)
-    }
 
     fn test_block_resolve(prefer_ipv6: bool) {
-        let (mut resolver, tests) = init_resolver(prefer_ipv6);
+        let mut resolver = Resolver::new(RESOLVER_TOKEN, None, prefer_ipv6).unwrap();
 
-        for (hostname, ip_addr) in tests {
+        for hostname in TESTS {
             match resolver.block_resolve(hostname) {
-                Ok(r) => {
-                    assert!(r.is_some());
-                    assert_eq!(r.unwrap(), super::HostIpaddr(hostname.to_string(), ip_addr));
+                Ok(Some(host_ipaddr)) => {
+                    println!("{}", host_ipaddr);
                 }
+                Ok(None) => assert!(false),
                 Err(e) => {
                     println!("block_resolve failed: {:?}", e);
                     assert!(false);
@@ -424,20 +421,22 @@ mod test {
     }
 
     fn test_mio_loop(prefer_ipv6: bool) -> io::Result<()> {
-        let (mut resolver, tests) = init_resolver(prefer_ipv6);
+        let mut resolver = Resolver::new(RESOLVER_TOKEN, None, prefer_ipv6).unwrap();
 
         let poll = Poll::new().unwrap();
         resolver.register(&poll).unwrap();
         let mut events = Events::with_capacity(1024);
 
         let mut cnt = RESOLVER_TOKEN.0 + 1;
-        for (hostname, &ip_addr) in &tests {
-            if let Ok(Some(host_ipaddr)) = resolver.resolve(Token(cnt), hostname) {
-                assert_eq!(HostIpaddr(hostname.to_string(), ip_addr), host_ipaddr);
+        for hostname in TESTS {
+            let token = Token(cnt);
+            if let Ok(Some(host_ipaddr)) = resolver.resolve(token, hostname) {
+                println!("{{{:?}}} => {}", token, host_ipaddr);
             } else {
                 cnt += 1;
             }
         }
+        println!("cnt = {}", cnt);
 
         while cnt > RESOLVER_TOKEN.0 + 1 {
             if let 0 = poll.poll(&mut events, None)? {
@@ -449,6 +448,7 @@ mod test {
                     RESOLVER_TOKEN => {
                         let r = resolver.handle_events(&poll, event.kind());
                         assert!(r.is_ok());
+                        println!("{}", r.unwrap());
                     }
                     _ => unreachable!(),
                 }
