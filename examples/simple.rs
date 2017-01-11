@@ -8,16 +8,15 @@ use mio_dns::Resolver;
 
 const PREFER_IPV6: bool = false;
 const RESOLVER_TOKEN: Token = Token(0);
-const TESTS: &'static [&'static str] = &[
-    "8.8.8.8",
-    "localhost",
-    "localhost.loggerhead.me",
-    "2001:4860:4860::8888",
-    // test cache
-    "www.baidu.com",
-    "localhost.loggerhead.me",
-    "www.baidu.com",
-];
+const TESTS: &'static [&'static str] = &["8.8.8.8",
+                                         "localhost",
+                                         "localhost.loggerhead.me",
+                                         "2001:4860:4860::8888",
+                                         "google.com",
+                                         "baidu.com",
+                                         // test cache
+                                         "localhost.loggerhead.me",
+                                         "google.com"];
 
 fn main() {
     let mut resolver = Resolver::new(RESOLVER_TOKEN, None, PREFER_IPV6).unwrap();

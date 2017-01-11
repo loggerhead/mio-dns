@@ -67,8 +67,8 @@ impl Resolver {
     }
 
     fn init_dns_servers(server_list: Option<Vec<String>>,
-                    prefer_ipv6: bool)
-                    -> io::Result<Vec<SocketAddr>> {
+                        prefer_ipv6: bool)
+                        -> io::Result<Vec<SocketAddr>> {
         // pre-define DNS server list
         let server_list = match server_list {
             Some(dns_servers) => dns_servers,
@@ -275,10 +275,11 @@ impl Resolver {
         let pollopts = PollOpt::edge() | PollOpt::oneshot();
 
         if is_reregister {
-            poll.reregister(&self.sock, self.token, events, pollopts)
-        } else {
-            poll.register(&self.sock, self.token, events, pollopts)
-        }.map_err(From::from)
+                poll.reregister(&self.sock, self.token, events, pollopts)
+            } else {
+                poll.register(&self.sock, self.token, events, pollopts)
+            }
+            .map_err(From::from)
     }
 
     pub fn register(&mut self, poll: &Poll) -> io::Result<()> {
@@ -384,13 +385,11 @@ mod test {
     use super::*;
 
     const RESOLVER_TOKEN: Token = Token(0);
-    const TESTS: &'static [&'static str] = &[
-        "8.8.8.8",
-        "localhost",
-        "localhost.loggerhead.me",
-        "2001:4860:4860::8888",
-        "localhost.loggerhead.me",
-    ];
+    const TESTS: &'static [&'static str] = &["8.8.8.8",
+                                             "localhost",
+                                             "localhost.loggerhead.me",
+                                             "2001:4860:4860::8888",
+                                             "localhost.loggerhead.me"];
 
 
     fn test_block_resolve(prefer_ipv6: bool) {
