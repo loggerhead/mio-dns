@@ -329,7 +329,7 @@ pub fn parse_resolv(prefer_ipv6: bool) -> Vec<String> {
 
     if servers.is_empty() {
         let dns_servers = if cfg!(feature = "china_dns") {
-            vec!["114.114.114.114", "114.114.115.115"]
+            vec!["119.29.29.29", "114.114.114.114"]
         } else {
             if prefer_ipv6 {
                 vec!["2001:4860:4860::8888", "2001:4860:4860::8844"]
